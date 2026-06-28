@@ -40,10 +40,59 @@ func TestParseSize(t *testing.T) {
 }
 
 func TestPartName(t *testing.T) {
-	got := partName("data.bin", 7)
-	want := "data.bin.part000007"
-	if got != want {
+	if got, want := partName("data.bin", 7, 6), "data.bin.part000007"; got != want {
 		t.Errorf("partName=%q want %q", got, want)
+	}
+	if got, want := partName("data.bin", 12345, 4), "data.bin.part12345"; got != want {
+		t.Errorf("partName overflow=%q want %q", got, want)
+	}
+}
+
+func TestDigitsFor(t *testing.T) {
+	cases := []struct {
+		fileSize, chunkSize int64
+		want                int
+	}{
+		{0, 1024, 6},
+		{1, 1024, 6},
+		{1024 * 1024, 1024, 6},                       // 1024 parts, but floor is 6
+		{int64(1024) * 1024 * 1024 * 1024, 1024, 10}, // 1G of 1K parts -> 10 digits
+	}
+	for _, c := range cases {
+		if got := digitsFor(c.fileSize, c.chunkSize); got != c.want {
+			t.Errorf("digitsFor(%d,%d)=%d want %d", c.fileSize, c.chunkSize, got, c.want)
+		}
+	}
+}
+
+func TestMergeSortsNumerically(t *testing.T) {
+	// Mixed-width chunks must still be ordered by numeric index, not lex order.
+	dir := t.TempDir()
+	files := map[string]string{
+		"x.bin.part0":   "A",
+		"x.bin.part1":   "B",
+		"x.bin.part10":  "K",
+		"x.bin.part2":   "C",
+		"x.bin.part100": "Z",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parts, err := findParts(dir, "x.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotOrder := make([]string, len(parts))
+	for i, p := range parts {
+		gotOrder[i] = filepath.Base(p)
+	}
+	want := []string{"x.bin.part0", "x.bin.part1", "x.bin.part2", "x.bin.part10", "x.bin.part100"}
+	for i := range want {
+		if gotOrder[i] != want[i] {
+			t.Fatalf("part order=%v want %v", gotOrder, want)
+		}
 	}
 }
 
