@@ -3,12 +3,21 @@
 //
 // Usage:
 //
-//	splitmerge split -input FILE -size SIZE -output DIR
-//	splitmerge merge -input DIR  -output FILE [-name BASENAME]
+//	splitmerge split -input FILE -size SIZE -output DIR [-buf BYTES]
+//	splitmerge merge -input DIR  -output FILE [-name BASENAME] [-buf BYTES]
 //
-// SIZE accepts plain bytes or a suffix: K, M, G, T (powers of 1024).
-// Chunks are written as "<basename>.partNNNNNN" so lexicographic order
-// matches split order; merge consumes all matching parts in that order.
+// SIZE and -buf accept plain bytes or a suffix: K, M, G, T (powers of 1024).
+//
+// Memory: both commands stream through a small user-space buffer (default
+// 64 KiB, tunable with -buf) and never load a whole file or whole chunk
+// into memory, so arbitrarily large files work on low-RAM systems. On Linux,
+// *os.File satisfies io.ReaderFrom and the standard library routes copies
+// through copy_file_range/sendfile when possible, bypassing the buffer
+// entirely.
+//
+// Chunks are written as "<basename>.partNNN..." with a width sized to the
+// expected part count (minimum 6 digits). Merge sorts by parsed numeric
+// index, so chunks produced with any width are accepted.
 package main
 
 import (
@@ -24,9 +33,9 @@ import (
 )
 
 const (
-	partSuffix   = ".part"
-	partDigits   = 6
-	copyBufBytes = 1 << 20 // 1 MiB
+	partSuffix      = ".part"
+	minPartDigits   = 6
+	defaultBufBytes = 64 << 10 // 64 KiB
 )
 
 func main() {
@@ -64,12 +73,16 @@ Commands:
   merge   Merge chunks in an input directory back into a single file
 
 Split:
-  splitmerge split -input FILE -size SIZE -output DIR
+  splitmerge split -input FILE -size SIZE -output DIR [-buf BYTES]
 
 Merge:
-  splitmerge merge -input DIR -output FILE [-name BASENAME]
+  splitmerge merge -input DIR -output FILE [-name BASENAME] [-buf BYTES]
 
-SIZE accepts a suffix: K, M, G, T (powers of 1024). Examples: 1048576, 10M, 1G.
+SIZE and -buf accept a suffix: K, M, G, T (powers of 1024). Examples:
+  -size 10M, -size 1G, -buf 64K.
+
+Both commands stream and use only the buffer's worth of memory regardless
+of input size; the default 64 KiB buffer is suitable for low-memory systems.
 `)
 }
 
@@ -78,6 +91,7 @@ func runSplit(args []string) error {
 	input := fs.String("input", "", "path to the input file to split (required)")
 	sizeStr := fs.String("size", "", "chunk size, e.g. 10M, 1G (required)")
 	output := fs.String("output", "", "directory to write chunks to (required)")
+	bufStr := fs.String("buf", "64K", "copy buffer size; caps in-memory footprint")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -93,6 +107,10 @@ func runSplit(args []string) error {
 	if size <= 0 {
 		return errors.New("-size must be greater than zero")
 	}
+	bufBytes, err := parseBuf(*bufStr)
+	if err != nil {
+		return err
+	}
 
 	in, err := os.Open(*input)
 	if err != nil {
@@ -100,18 +118,24 @@ func runSplit(args []string) error {
 	}
 	defer in.Close()
 
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	width := digitsFor(info.Size(), size)
+
 	if err := os.MkdirAll(*output, 0o755); err != nil {
 		return err
 	}
 
 	base := filepath.Base(*input)
-	buf := make([]byte, copyBufBytes)
+	buf := make([]byte, bufBytes)
 	var (
 		index   int
 		written int64
 	)
 	for {
-		partPath := filepath.Join(*output, partName(base, index))
+		partPath := filepath.Join(*output, partName(base, index, width))
 		out, err := os.Create(partPath)
 		if err != nil {
 			return err
@@ -154,12 +178,17 @@ func runMerge(args []string) error {
 	input := fs.String("input", "", "directory containing chunk files (required)")
 	output := fs.String("output", "", "path to write the merged file (required)")
 	name := fs.String("name", "", "basename of the chunks to merge (default: auto-detect)")
+	bufStr := fs.String("buf", "64K", "copy buffer size; caps in-memory footprint")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *input == "" || *output == "" {
 		fs.Usage()
 		return errors.New("merge: -input and -output are required")
+	}
+	bufBytes, err := parseBuf(*bufStr)
+	if err != nil {
+		return err
 	}
 
 	parts, err := findParts(*input, *name)
@@ -179,7 +208,7 @@ func runMerge(args []string) error {
 	}
 	defer out.Close()
 
-	buf := make([]byte, copyBufBytes)
+	buf := make([]byte, bufBytes)
 	var total int64
 	for _, p := range parts {
 		f, err := os.Open(p)
@@ -202,21 +231,46 @@ func runMerge(args []string) error {
 	return nil
 }
 
-// partName returns "<base>.partNNNNNN" with zero-padded index.
-func partName(base string, index int) string {
-	return fmt.Sprintf("%s%s%0*d", base, partSuffix, partDigits, index)
+// partName returns "<base>.partNNN..." with index zero-padded to width.
+func partName(base string, index, width int) string {
+	if width < 1 {
+		width = 1
+	}
+	return fmt.Sprintf("%s%s%0*d", base, partSuffix, width, index)
+}
+
+// digitsFor returns the zero-padding width to use for chunk filenames given
+// the input file size and chunk size. The width is large enough to hold the
+// highest index, with a floor of minPartDigits so small files still get
+// pleasant-looking names.
+func digitsFor(fileSize, chunkSize int64) int {
+	if chunkSize <= 0 || fileSize <= 0 {
+		return minPartDigits
+	}
+	parts := (fileSize + chunkSize - 1) / chunkSize
+	w := len(strconv.FormatInt(parts-1, 10))
+	if w < minPartDigits {
+		w = minPartDigits
+	}
+	return w
+}
+
+type partRef struct {
+	index int64
+	path  string
 }
 
 // findParts returns the chunk files in dir for the given basename, sorted by
-// part index. If basename is empty, it is inferred from the directory contents
-// and merge fails if more than one chunk family is present.
+// numeric part index (so any zero-pad width works). If basename is empty, it
+// is inferred from the directory contents and merge fails if more than one
+// chunk family is present.
 func findParts(dir, basename string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	bases := map[string][]string{}
+	bases := map[string][]partRef{}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -230,11 +284,21 @@ func findParts(dir, basename string) ([]string, error) {
 		if len(suffix) == 0 {
 			continue
 		}
-		if _, err := strconv.Atoi(suffix); err != nil {
+		n, err := strconv.ParseInt(suffix, 10, 64)
+		if err != nil {
 			continue
 		}
 		b := name[:idx]
-		bases[b] = append(bases[b], filepath.Join(dir, name))
+		bases[b] = append(bases[b], partRef{index: n, path: filepath.Join(dir, name)})
+	}
+
+	pick := func(refs []partRef) []string {
+		sort.Slice(refs, func(i, j int) bool { return refs[i].index < refs[j].index })
+		out := make([]string, len(refs))
+		for i, r := range refs {
+			out[i] = r.path
+		}
+		return out
 	}
 
 	if basename == "" {
@@ -243,8 +307,7 @@ func findParts(dir, basename string) ([]string, error) {
 			return nil, nil
 		case 1:
 			for _, v := range bases {
-				sort.Strings(v)
-				return v, nil
+				return pick(v), nil
 			}
 		default:
 			keys := make([]string, 0, len(bases))
@@ -260,8 +323,24 @@ func findParts(dir, basename string) ([]string, error) {
 	if !ok {
 		return nil, fmt.Errorf("no chunks found for basename %q in %s", basename, dir)
 	}
-	sort.Strings(v)
-	return v, nil
+	return pick(v), nil
+}
+
+// parseBuf parses -buf and enforces a sensible floor so we always make
+// forward progress even when the user passes 0 or a tiny value.
+func parseBuf(s string) (int, error) {
+	v, err := parseSize(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid -buf: %w", err)
+	}
+	if v <= 0 {
+		return defaultBufBytes, nil
+	}
+	const minBuf = 4 << 10
+	if v < minBuf {
+		v = minBuf
+	}
+	return int(v), nil
 }
 
 // parseSize accepts decimal bytes with an optional K/M/G/T suffix (1024-based).
