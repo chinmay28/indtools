@@ -8,12 +8,15 @@
 //
 // SIZE and -buf accept plain bytes or a suffix: K, M, G, T (powers of 1024).
 //
-// Memory: both commands stream through a small user-space buffer (default
-// 64 KiB, tunable with -buf) and never load a whole file or whole chunk
-// into memory, so arbitrarily large files work on low-RAM systems. On Linux,
-// *os.File satisfies io.ReaderFrom and the standard library routes copies
-// through copy_file_range/sendfile when possible, bypassing the buffer
-// entirely.
+// Speed: copies are optimized for throughput. On Linux, *os.File satisfies
+// io.ReaderFrom and the standard library routes copies through
+// copy_file_range/sendfile, so file-to-file moves stay in the kernel. On
+// other platforms the user-space buffer is used directly. Per-chunk progress
+// logging is off by default; pass -verbose to enable it.
+//
+// Memory: the default 8 MiB buffer assumes at least ~100 MiB of free RAM.
+// Override -buf (e.g. -buf 256K) on smaller machines; any value is honored
+// verbatim, down to a few KiB.
 //
 // Chunks are written as "<basename>.partNNN..." with a width sized to the
 // expected part count (minimum 6 digits). Merge sorts by parsed numeric
@@ -35,7 +38,7 @@ import (
 const (
 	partSuffix      = ".part"
 	minPartDigits   = 6
-	defaultBufBytes = 64 << 10 // 64 KiB
+	defaultBufBytes = 8 << 20 // 8 MiB
 )
 
 func main() {
@@ -73,16 +76,18 @@ Commands:
   merge   Merge chunks in an input directory back into a single file
 
 Split:
-  splitmerge split -input FILE -size SIZE -output DIR [-buf BYTES]
+  splitmerge split -input FILE -size SIZE -output DIR [-buf BYTES] [-verbose]
 
 Merge:
-  splitmerge merge -input DIR -output FILE [-name BASENAME] [-buf BYTES]
+  splitmerge merge -input DIR -output FILE [-name BASENAME] [-buf BYTES] [-verbose]
 
 SIZE and -buf accept a suffix: K, M, G, T (powers of 1024). Examples:
-  -size 10M, -size 1G, -buf 64K.
+  -size 10M, -size 1G, -buf 16M.
 
-Both commands stream and use only the buffer's worth of memory regardless
-of input size; the default 64 KiB buffer is suitable for low-memory systems.
+Default buffer is 8 MiB, tuned for throughput on machines with at least
+~100 MiB of free RAM. On smaller machines override -buf (e.g. -buf 256K)
+to cap memory use; any value is honored verbatim. Pass -verbose to log
+every chunk; otherwise only a summary is printed.
 `)
 }
 
@@ -91,7 +96,8 @@ func runSplit(args []string) error {
 	input := fs.String("input", "", "path to the input file to split (required)")
 	sizeStr := fs.String("size", "", "chunk size, e.g. 10M, 1G (required)")
 	output := fs.String("output", "", "directory to write chunks to (required)")
-	bufStr := fs.String("buf", "64K", "copy buffer size; caps in-memory footprint")
+	bufStr := fs.String("buf", "8M", "copy buffer size; tuned for throughput")
+	verbose := fs.Bool("verbose", false, "log every chunk; off by default for speed")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -162,7 +168,9 @@ func runSplit(args []string) error {
 
 		written += n
 		index++
-		fmt.Printf("wrote %s (%d bytes)\n", partPath, n)
+		if *verbose {
+			fmt.Printf("wrote %s (%d bytes)\n", partPath, n)
+		}
 
 		if n < size {
 			break
@@ -178,7 +186,8 @@ func runMerge(args []string) error {
 	input := fs.String("input", "", "directory containing chunk files (required)")
 	output := fs.String("output", "", "path to write the merged file (required)")
 	name := fs.String("name", "", "basename of the chunks to merge (default: auto-detect)")
-	bufStr := fs.String("buf", "64K", "copy buffer size; caps in-memory footprint")
+	bufStr := fs.String("buf", "8M", "copy buffer size; tuned for throughput")
+	verbose := fs.Bool("verbose", false, "log every chunk; off by default for speed")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -224,7 +233,9 @@ func runMerge(args []string) error {
 			return closeErr
 		}
 		total += n
-		fmt.Printf("merged %s (%d bytes)\n", p, n)
+		if *verbose {
+			fmt.Printf("merged %s (%d bytes)\n", p, n)
+		}
 	}
 
 	fmt.Printf("merge complete: %d byte(s) from %d part(s) into %s\n", total, len(parts), *output)
@@ -326,8 +337,9 @@ func findParts(dir, basename string) ([]string, error) {
 	return pick(v), nil
 }
 
-// parseBuf parses -buf and enforces a sensible floor so we always make
-// forward progress even when the user passes 0 or a tiny value.
+// parseBuf parses -buf. A zero value falls back to the default; otherwise the
+// user's value is honored verbatim (we trust the operator to pick a sensible
+// size for their environment).
 func parseBuf(s string) (int, error) {
 	v, err := parseSize(s)
 	if err != nil {
@@ -335,10 +347,6 @@ func parseBuf(s string) (int, error) {
 	}
 	if v <= 0 {
 		return defaultBufBytes, nil
-	}
-	const minBuf = 4 << 10
-	if v < minBuf {
-		v = minBuf
 	}
 	return int(v), nil
 }
