@@ -12,6 +12,7 @@ another repo should be enough to ship it on its own.
 | Directory | Language | What it does |
 |-----------|----------|--------------|
 | [`splitmerge/`](splitmerge) | Go | Split a file into fixed-size chunks and merge them back. Streams through the kernel where possible; tuned for throughput on machines with ~100 MiB free RAM, with `-buf` to dial down for smaller hosts. |
+| [`datamill/`](datamill) | Go | Build LLM fine-tuning datasets from PDF, EPUB, MOBI, DOCX, HTML, Markdown and text files: extract, clean, chunk, generate Q/A pairs with an OpenAI-compatible or Anthropic model, and export Alpaca / ShareGPT / chat-messages / pretraining JSON(L). Resumable; modelled on easy-dataset. |
 
 ## Repository conventions
 
