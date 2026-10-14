@@ -215,3 +215,86 @@ func lens(ss []string) []int {
 	}
 	return out
 }
+
+func TestUnitParagraph(t *testing.T) {
+	o := Options{Target: 300, Min: 40, Max: 400, Unit: UnitParagraph}
+	heading := "# Chapter One"
+	body1 := para(200, "alpha")
+	body2 := para(250, "beta")
+	short := "Yes."
+	long := para(900, "gamma")
+	in := strings.Join([]string{heading, body1, body2, short, long, "The end."}, "\n\n")
+	got := Split(in, o)
+	checkInvariants(t, in, got, o)
+	// The heading rides with the first paragraph; the one-word reply is
+	// glued to the long paragraph's first piece; the long paragraph is
+	// split into several pieces; the trailing runt joins its predecessor.
+	if len(got) < 5 {
+		t.Fatalf("got %d chunks: %q", len(got), got)
+	}
+	if got[0] != heading+"\n\n"+body1 {
+		t.Fatalf("chunk 0 = %q", got[0])
+	}
+	if got[1] != body2 {
+		t.Fatalf("chunk 1 = %q", got[1])
+	}
+	if !strings.HasPrefix(got[2], short+"\n\ngamma") {
+		t.Fatalf("chunk 2 = %q", got[2])
+	}
+	last := got[len(got)-1]
+	if !strings.HasSuffix(last, "\n\nThe end.") || runeLen(last) >= o.Max+2 {
+		t.Fatalf("last = %q", last)
+	}
+	for i, c := range got {
+		if strings.Contains(c, "alpha") && strings.Contains(c, "beta") {
+			t.Fatalf("chunk %d merged two full paragraphs: %q", i, c)
+		}
+	}
+	// Overlap is ignored for paragraph units.
+	o.Overlap = 50
+	if got2 := Split(in, o); strings.Join(got2, "|") != strings.Join(got, "|") {
+		t.Fatalf("overlap changed paragraph chunks")
+	}
+}
+
+func TestUnitParagraphRuntThatCannotJoin(t *testing.T) {
+	// A runt whose host would overflow Max stands alone.
+	o := Options{Target: 100, Min: 20, Max: 100, Unit: UnitParagraph}
+	in := "Tiny.\n\n" + para(95, "word")
+	got := Split(in, o)
+	checkInvariants(t, in, got, o)
+	if len(got) != 2 || got[0] != "Tiny." {
+		t.Fatalf("got %q", got)
+	}
+	// Only runts: they are emitted as one chunk.
+	in = "A.\n\nB.\n\nC."
+	if got := Split(in, o); len(got) != 1 || got[0] != "A.\n\nB.\n\nC." {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestUnitDocument(t *testing.T) {
+	in := "  First.\n\n\n\nSecond " + para(5000, "x") + "\n\nThird.\n"
+	got := Split(in, Options{Unit: UnitDocument})
+	if len(got) != 1 {
+		t.Fatalf("got %d chunks", len(got))
+	}
+	want := "First.\n\nSecond " + para(5000, "x") + "\n\nThird."
+	if got[0] != want {
+		t.Fatalf("document chunk = %q", got[0])
+	}
+	if stripWS(got[0]) != stripWS(in) {
+		t.Fatal("content not preserved")
+	}
+}
+
+func TestValidUnit(t *testing.T) {
+	for _, u := range []Unit{"", UnitChunk, UnitParagraph, UnitDocument} {
+		if !ValidUnit(u) {
+			t.Errorf("%q should be valid", u)
+		}
+	}
+	if ValidUnit("sentence") {
+		t.Error("sentence should be invalid")
+	}
+}
