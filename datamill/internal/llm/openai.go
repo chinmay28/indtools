@@ -46,6 +46,9 @@ type oaiRequest struct {
 	Messages    []oaiMessage `json:"messages"`
 	MaxTokens   int          `json:"max_tokens,omitempty"`
 	Temperature *float64     `json:"temperature,omitempty"`
+	// ReasoningEffort is OpenAI's o-series knob; Ollama maps it onto its
+	// "think" option ("none" disables thinking entirely).
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type oaiResponse struct {
@@ -62,7 +65,7 @@ type oaiResponse struct {
 
 // Complete implements Client.
 func (o *OpenAI) Complete(ctx context.Context, req Request) (string, error) {
-	body := oaiRequest{Model: o.model, MaxTokens: req.MaxTokens, Temperature: req.Temperature}
+	body := oaiRequest{Model: o.model, MaxTokens: req.MaxTokens, Temperature: req.Temperature, ReasoningEffort: req.ReasoningEffort}
 	if req.System != "" {
 		body.Messages = append(body.Messages, oaiMessage{Role: "system", Content: req.System})
 	}

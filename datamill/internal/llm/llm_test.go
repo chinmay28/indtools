@@ -25,15 +25,33 @@ func TestOpenAIComplete(t *testing.T) {
 	defer srv.Close()
 	c := NewOpenAI(srv.URL+"/v1/", "key", "gpt-x", nil)
 	temp := 0.7
-	out, err := c.Complete(context.Background(), Request{System: "sys", User: "hello", MaxTokens: 10, Temperature: &temp})
+	out, err := c.Complete(context.Background(), Request{System: "sys", User: "hello", MaxTokens: 10, Temperature: &temp, ReasoningEffort: "none"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if out != "hi there" || auth != "Bearer key" || c.Model() != "gpt-x" {
 		t.Fatalf("out=%q auth=%q", out, auth)
 	}
-	if got.Model != "gpt-x" || len(got.Messages) != 2 || got.Messages[0].Role != "system" || got.Messages[1].Content != "hello" || got.MaxTokens != 10 || got.Temperature == nil || *got.Temperature != 0.7 {
+	if got.Model != "gpt-x" || len(got.Messages) != 2 || got.Messages[0].Role != "system" || got.Messages[1].Content != "hello" || got.MaxTokens != 10 || got.Temperature == nil || *got.Temperature != 0.7 || got.ReasoningEffort != "none" {
 		t.Fatalf("request %+v", got)
+	}
+}
+
+func TestOpenAIOmitsUnsetOptionals(t *testing.T) {
+	var raw map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&raw)
+		w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+	c := NewOpenAI(srv.URL, "", "m", nil)
+	if _, err := c.Complete(context.Background(), Request{User: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"temperature", "reasoning_effort", "max_tokens"} {
+		if _, ok := raw[k]; ok {
+			t.Errorf("%s should be omitted when unset: %v", k, raw)
+		}
 	}
 }
 

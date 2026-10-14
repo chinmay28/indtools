@@ -29,6 +29,9 @@ type Generator struct {
 	MaxTokens int
 	// Temperature, when non-nil, is sent to the backend.
 	Temperature *float64
+	// ReasoningEffort, when set, is passed to the backend to cap or
+	// disable model "thinking" (see llm.Request.ReasoningEffort).
+	ReasoningEffort string
 }
 
 // Answer is a generated answer with optional reasoning.
@@ -57,10 +60,11 @@ func (g *Generator) Questions(ctx context.Context, chunk string, n int) ([]strin
 		n = QuestionsPerChunk(len([]rune(chunk)))
 	}
 	out, err := g.Client.Complete(ctx, llm.Request{
-		System:      questionSystem,
-		User:        questionPrompt(chunk, n, g.Language),
-		MaxTokens:   g.MaxTokens,
-		Temperature: g.Temperature,
+		System:          questionSystem,
+		User:            questionPrompt(chunk, n, g.Language),
+		MaxTokens:       g.MaxTokens,
+		Temperature:     g.Temperature,
+		ReasoningEffort: g.ReasoningEffort,
 	})
 	if err != nil {
 		return nil, err
@@ -79,10 +83,11 @@ func (g *Generator) Questions(ctx context.Context, chunk string, n int) ([]strin
 // is asked to show its reasoning, returned separately.
 func (g *Generator) Answer(ctx context.Context, chunk, question string, cot bool) (Answer, error) {
 	out, err := g.Client.Complete(ctx, llm.Request{
-		System:      answerSystem,
-		User:        answerPrompt(chunk, question, g.Language, cot),
-		MaxTokens:   g.MaxTokens,
-		Temperature: g.Temperature,
+		System:          answerSystem,
+		User:            answerPrompt(chunk, question, g.Language, cot),
+		MaxTokens:       g.MaxTokens,
+		Temperature:     g.Temperature,
+		ReasoningEffort: g.ReasoningEffort,
 	})
 	if err != nil {
 		return Answer{}, err
@@ -97,10 +102,11 @@ func (g *Generator) Answer(ctx context.Context, chunk, question string, cot bool
 var fenceRe = regexp.MustCompile("(?s)```[a-zA-Z]*\\s*(.*?)```")
 
 // ParseQuestions extracts a JSON array of strings from model output. It
-// tolerates code fences and surrounding prose, falls back to a numbered or
-// bulleted list, trims entries, drops empties and duplicates.
+// tolerates a leading <think> block, code fences and surrounding prose,
+// falls back to a numbered or bulleted list, trims entries, drops empties
+// and duplicates.
 func ParseQuestions(s string) ([]string, error) {
-	s = strings.TrimSpace(s)
+	s = strings.TrimSpace(openTagRe.ReplaceAllString(s, ""))
 	if m := fenceRe.FindStringSubmatch(s); m != nil {
 		s = m[1]
 	}

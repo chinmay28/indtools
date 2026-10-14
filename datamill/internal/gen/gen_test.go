@@ -39,6 +39,7 @@ func TestParseQuestions(t *testing.T) {
 		{`[{"question":"From object?"},{"q":"Short key?"},{"other":"ignored"}]`, []string{"From object?", "Short key?"}},
 		{`["dup", "DUP", "  ", "other"]`, []string{"dup", "other"}},
 		{"1. First question?\n2) Second question?\n- Third one?\nnot a list line", []string{"First question?", "Second question?", "Third one?"}},
+		{"<think>\nMaybe [\"not this\"]\n</think>\n[\"After thinking?\"]", []string{"After thinking?"}},
 		{"[\"unterminated\"", nil},
 		{"", nil},
 	}
@@ -97,13 +98,13 @@ func TestGeneratorQuestionsAndAnswer(t *testing.T) {
 		}
 		return "", errors.New("unexpected prompt: " + req.User)
 	}}
-	g := &Generator{Client: f, Language: "fr"}
+	g := &Generator{Client: f, Language: "fr", ReasoningEffort: "none"}
 	qs, err := g.Questions(context.Background(), "chunk text", 2)
 	if err != nil || len(qs) != 2 { // truncated to n
 		t.Fatalf("%v %v", qs, err)
 	}
-	if !strings.Contains(f.seen[0].User, "French") || !strings.Contains(f.seen[0].User, "chunk text") {
-		t.Fatalf("prompt: %s", f.seen[0].User)
+	if !strings.Contains(f.seen[0].User, "French") || !strings.Contains(f.seen[0].User, "chunk text") || f.seen[0].ReasoningEffort != "none" {
+		t.Fatalf("prompt: %+v", f.seen[0])
 	}
 	a, err := g.Answer(context.Background(), "chunk text", "Q1?", true)
 	if err != nil || a.Text != "A1" || a.Reasoning != "step" {

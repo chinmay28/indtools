@@ -102,9 +102,9 @@ func TestLLMFlagsClient(t *testing.T) {
 	if _, err := (&llmFlags{provider: "openai", model: "m", stage: "bogus"}).runOptions(); err == nil {
 		t.Fatal("bad stage accepted")
 	}
-	lf := &llmFlags{temperature: 0.2, lang: "de"}
+	lf := &llmFlags{temperature: 0.2, lang: "de", reasoningEffort: "none"}
 	g := lf.generator(c)
-	if g.Temperature == nil || *g.Temperature != 0.2 || g.Language != "de" {
+	if g.Temperature == nil || *g.Temperature != 0.2 || g.Language != "de" || g.ReasoningEffort != "none" {
 		t.Fatalf("%+v", g)
 	}
 	if g := (&llmFlags{temperature: -1}).generator(c); g.Temperature != nil {
