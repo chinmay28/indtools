@@ -7,6 +7,9 @@
 //	sharegpt  {"conversations":[{"from":"system"|"human"|"gpt","value"}]}
 //	messages  {"messages":[{"role":"system"|"user"|"assistant","content"}]}
 //	          (the OpenAI fine-tuning / chat-template convention)
+//	pairs     {"id","chunk_id","ref","meta","question","answer",...}: the
+//	          raw pair with its identifiers, for evaluation sets and for
+//	          tools that build their own training records
 //	text      {"text": ...} one record per chunk, for continued pretraining
 //
 // Contract: JSONL output has exactly one JSON object per line; JSON output
@@ -28,18 +31,25 @@ const (
 	Alpaca   = "alpaca"
 	ShareGPT = "sharegpt"
 	Messages = "messages"
+	Pairs    = "pairs"
 	Text     = "text"
 )
 
-// Formats lists the supported pair formats (Text is chunk-based).
-var Formats = []string{Alpaca, ShareGPT, Messages, Text}
+// Formats lists the supported formats; all but the last (Text) are pair
+// formats.
+var Formats = []string{Alpaca, ShareGPT, Messages, Pairs, Text}
 
-// Pair is one training example.
+// Pair is one training example. The identifier fields are only written by
+// the Pairs format.
 type Pair struct {
 	Question  string
 	Answer    string
 	Reasoning string
 	Context   string
+	// ID is the question's id, ChunkID the chunk's, Ref the chunk's
+	// external reference and Meta its metadata (all optional).
+	ID, ChunkID, Ref string
+	Meta             map[string]string
 }
 
 // Options controls the output.
@@ -121,6 +131,21 @@ func record(p Pair, o Options) (any, error) {
 			map[string]string{"from": "human", "value": userTurn},
 			map[string]string{"from": "gpt", "value": answer})
 		return map[string]any{"conversations": conv}, nil
+	case Pairs:
+		rec := map[string]any{"id": p.ID, "chunk_id": p.ChunkID, "question": p.Question, "answer": p.Answer}
+		if p.Ref != "" {
+			rec["ref"] = p.Ref
+		}
+		if len(p.Meta) > 0 {
+			rec["meta"] = p.Meta
+		}
+		if strings.TrimSpace(p.Reasoning) != "" {
+			rec["reasoning"] = strings.TrimSpace(p.Reasoning)
+		}
+		if o.IncludeContext && p.Context != "" {
+			rec["context"] = p.Context
+		}
+		return rec, nil
 	case Messages:
 		var msgs []map[string]string
 		if o.System != "" {

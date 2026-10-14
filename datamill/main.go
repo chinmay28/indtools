@@ -225,13 +225,21 @@ func (l *llmFlags) runOptions() (gen.RunOptions, error) {
 
 type exportFlags struct {
 	format, out, system       string
+	answerSource              string
 	context, reasoning, jsonl bool
 }
+
+// Answer sources for export.
+const (
+	answerFromModel = "model"
+	answerFromChunk = "chunk"
+)
 
 func (e *exportFlags) bind(fs *flag.FlagSet) {
 	fs.StringVar(&e.format, "format", export.Alpaca, "output format: "+strings.Join(export.Formats, ", "))
 	fs.StringVar(&e.out, "out", "", "output file; a .json extension writes one JSON array, anything else JSON Lines")
 	fs.StringVar(&e.system, "system", "", "system prompt to include in chat formats")
+	fs.StringVar(&e.answerSource, "answer-source", answerFromModel, "what the assistant turn is: model (generated answers; unanswered questions are skipped) or chunk (the source chunk itself, for -task prompt/reply and for question-for-passage sets)")
 	fs.BoolVar(&e.context, "include-context", false, "include the source chunk in each example")
 	fs.BoolVar(&e.reasoning, "include-reasoning", false, "include chain-of-thought (from -cot) inside <think> tags before the answer")
 }
@@ -448,13 +456,9 @@ func doExport(p *store.Project, ef exportFlags) error {
 			return err
 		}
 	} else {
-		pairs, err := p.Pairs()
+		recs, err := exportPairs(p, ef.answerSource)
 		if err != nil {
 			return err
-		}
-		recs := make([]export.Pair, len(pairs))
-		for i, pr := range pairs {
-			recs[i] = export.Pair{Question: pr.Question.Text, Answer: pr.Answer.Text, Reasoning: pr.Answer.Reasoning, Context: pr.Chunk.Text}
 		}
 		n = len(recs)
 		if err := export.WritePairs(f, recs, export.Options{
@@ -469,6 +473,39 @@ func doExport(p *store.Project, ef exportFlags) error {
 	}
 	fmt.Fprintf(os.Stderr, "export: wrote %d records to %s (%s)\n", n, ef.out, ef.format)
 	return nil
+}
+
+// exportPairs joins questions with their answers. With answerFromChunk
+// every question is exported and its chunk's text is the answer; with
+// answerFromModel only answered questions are exported.
+func exportPairs(p *store.Project, source string) ([]export.Pair, error) {
+	var pairs []store.Pair
+	var err error
+	switch source {
+	case answerFromModel, "":
+		pairs, err = p.Pairs()
+	case answerFromChunk:
+		pairs, err = p.AllPairs()
+	default:
+		return nil, fmt.Errorf("-answer-source must be model or chunk, got %q", source)
+	}
+	if err != nil {
+		return nil, err
+	}
+	recs := make([]export.Pair, len(pairs))
+	for i, pr := range pairs {
+		r := export.Pair{
+			ID: pr.Question.ID, ChunkID: pr.Chunk.ID, Ref: pr.Chunk.Ref, Meta: pr.Chunk.Meta,
+			Question: pr.Question.Text, Context: pr.Chunk.Text,
+		}
+		if source == answerFromChunk {
+			r.Answer = pr.Chunk.Text
+		} else {
+			r.Answer, r.Reasoning = pr.Answer.Text, pr.Answer.Reasoning
+		}
+		recs[i] = r
+	}
+	return recs, nil
 }
 
 func runAll(ctx context.Context, args []string) error {

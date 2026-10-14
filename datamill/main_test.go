@@ -188,3 +188,61 @@ func TestIngestRecords(t *testing.T) {
 		t.Fatalf("round trip %+v", again[0])
 	}
 }
+
+func TestExportAnswerSource(t *testing.T) {
+	dir := t.TempDir()
+	p, _ := store.Open(filepath.Join(dir, "proj"))
+	c0, c1 := store.ChunkID("src", 0), store.ChunkID("src", 1)
+	p.AppendChunks([]store.Chunk{
+		{ID: c0, SourceID: "src", Index: 0, Text: "Passage zero.", Ref: "p-0", Meta: map[string]string{"title": "T"}},
+		{ID: c1, SourceID: "src", Index: 1, Text: "Passage one."},
+	})
+	p.AppendQuestions([]store.Question{
+		{ID: store.QuestionID(c0, 1), ChunkID: c0, Text: "Q0?"},
+		{ID: store.QuestionID(c1, 1), ChunkID: c1, Text: "Q1?"},
+	})
+	p.AppendAnswers([]store.Answer{{QuestionID: store.QuestionID(c1, 1), Text: "A1", Reasoning: "r"}})
+
+	read := func(path string) []map[string]any {
+		data, _ := os.ReadFile(path)
+		var out []map[string]any
+		for _, ln := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var m map[string]any
+			if err := json.Unmarshal([]byte(ln), &m); err != nil {
+				t.Fatalf("%q: %v", ln, err)
+			}
+			out = append(out, m)
+		}
+		return out
+	}
+	out := filepath.Join(dir, "model.jsonl")
+	if err := doExport(p, exportFlags{format: "pairs", out: out}); err != nil {
+		t.Fatal(err)
+	}
+	recs := read(out)
+	if len(recs) != 1 || recs[0]["id"] != c1+"-q1" || recs[0]["answer"] != "A1" || recs[0]["reasoning"] != "r" {
+		t.Fatalf("model source: %v", recs)
+	}
+	out = filepath.Join(dir, "chunk.jsonl")
+	if err := doExport(p, exportFlags{format: "pairs", out: out, answerSource: "chunk"}); err != nil {
+		t.Fatal(err)
+	}
+	recs = read(out)
+	if len(recs) != 2 || recs[0]["answer"] != "Passage zero." || recs[0]["ref"] != "p-0" || recs[0]["chunk_id"] != c0 || recs[1]["answer"] != "Passage one." {
+		t.Fatalf("chunk source: %v", recs)
+	}
+	if _, ok := recs[1]["reasoning"]; ok {
+		t.Fatal("chunk answers carry no reasoning")
+	}
+	out = filepath.Join(dir, "chat.jsonl")
+	if err := doExport(p, exportFlags{format: "messages", out: out, answerSource: "chunk", system: "S"}); err != nil {
+		t.Fatal(err)
+	}
+	msgs := read(out)[0]["messages"].([]any)
+	if len(msgs) != 3 || msgs[1].(map[string]any)["content"] != "Q0?" || msgs[2].(map[string]any)["content"] != "Passage zero." {
+		t.Fatalf("messages: %v", msgs)
+	}
+	if err := doExport(p, exportFlags{format: "pairs", out: out, answerSource: "nope"}); err == nil {
+		t.Fatal("bad answer source accepted")
+	}
+}
