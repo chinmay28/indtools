@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -31,8 +32,13 @@ import (
 	"github.com/chinmay28/indtools/datamill/internal/extract"
 	"github.com/chinmay28/indtools/datamill/internal/gen"
 	"github.com/chinmay28/indtools/datamill/internal/llm"
+	"github.com/chinmay28/indtools/datamill/internal/records"
 	"github.com/chinmay28/indtools/datamill/internal/store"
 )
+
+// FormatRecords marks a source ingested from JSON Lines records, each of
+// which became one chunk unchanged.
+const FormatRecords = "jsonl"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -96,7 +102,9 @@ Usage:
 Run "datamill <command> -h" for the flags of each command.
 
 Inputs: .pdf (needs pdftotext from poppler), .epub, .mobi/.azw/.prc, .docx,
-.html, .md, .txt and any other UTF-8 text file.
+.html, .md, .txt and any other UTF-8 text file. A .jsonl file is read as
+pre-made passages: one {"id", "text", ...} object per line becomes one
+chunk, keeping "id" as its ref and the other fields as metadata.
 
 Environment: the API key is read from -api-key, else DATAMILL_API_KEY, else
 OPENAI_API_KEY / ANTHROPIC_API_KEY depending on the provider.
@@ -282,6 +290,9 @@ func ingestOne(ctx context.Context, p *store.Project, path string, cf chunkFlags
 		fmt.Fprintf(log, "%s: already ingested as %s, skipping\n", path, id)
 		return nil
 	}
+	if strings.EqualFold(filepath.Ext(path), ".jsonl") {
+		return ingestRecords(p, path, raw, id, sha, seen, log)
+	}
 	doc, err := extract.File(ctx, path, cf.extractOptions())
 	if err != nil {
 		return err
@@ -310,6 +321,46 @@ func ingestOne(ctx context.Context, p *store.Project, path string, cf chunkFlags
 	}
 	seen[id] = true
 	fmt.Fprintf(log, "%s: %s, %d chars, %d chunks (id %s)\n", path, doc.Format, src.Chars, len(chunks), id)
+	return nil
+}
+
+// ingestRecords turns each JSONL record into one chunk, keeping the
+// record's id as Chunk.Ref and its other fields as Chunk.Meta. Text is
+// whitespace-normalised but never reflowed or re-chunked.
+func ingestRecords(p *store.Project, path string, raw []byte, id, sha string, seen map[string]bool, log io.Writer) error {
+	recs, err := records.Parse(bytes.NewReader(raw))
+	if err != nil {
+		return err
+	}
+	if len(recs) == 0 {
+		return errors.New("no records")
+	}
+	chunks := make([]store.Chunk, 0, len(recs))
+	texts := make([]string, 0, len(recs))
+	for _, r := range recs {
+		text := clean.Text(r.Text, clean.Options{})
+		if text == "" {
+			continue
+		}
+		chunks = append(chunks, store.Chunk{ID: store.ChunkID(id, len(chunks)), SourceID: id, Index: len(chunks), Text: text, Ref: r.Ref, Meta: r.Meta})
+		texts = append(texts, text)
+	}
+	if len(chunks) == 0 {
+		return errors.New("no text after cleaning")
+	}
+	full := strings.Join(texts, "\n\n")
+	src := store.Source{
+		ID: id, Name: filepath.Base(path), Path: path, Format: FormatRecords,
+		Chars: len([]rune(full)), Chunks: len(chunks), SHA256: sha,
+	}
+	if err := p.AppendSource(src, full); err != nil {
+		return err
+	}
+	if err := p.AppendChunks(chunks); err != nil {
+		return err
+	}
+	seen[id] = true
+	fmt.Fprintf(log, "%s: %s, %d chars, %d records (id %s)\n", path, FormatRecords, src.Chars, len(chunks), id)
 	return nil
 }
 

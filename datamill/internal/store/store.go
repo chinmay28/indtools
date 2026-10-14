@@ -49,6 +49,12 @@ type Chunk struct {
 	SourceID string `json:"source_id"`
 	Index    int    `json:"index"`
 	Text     string `json:"text"`
+	// Ref is the caller's own identifier for the passage when the chunk
+	// was ingested from JSONL records; "" for chunks cut by datamill.
+	Ref string `json:"ref,omitempty"`
+	// Meta holds descriptive fields supplied with the record (title,
+	// recipient, date, ...). Prompts show them as context.
+	Meta map[string]string `json:"meta,omitempty"`
 }
 
 // Question is one generated question about a chunk.
