@@ -76,6 +76,40 @@ func TestShareGPTAndMessages(t *testing.T) {
 	}
 }
 
+func TestPairsFormat(t *testing.T) {
+	in := []Pair{
+		{ID: "src-0000-q1", ChunkID: "src-0000", Ref: "p-00412", Meta: map[string]string{"title": "Karma-Yoga"}, Question: "Q?", Answer: "the passage", Reasoning: " why ", Context: "the passage"},
+		{ID: "src-0001-q1", ChunkID: "src-0001", Question: "Q2?", Answer: "A2"},
+	}
+	var buf bytes.Buffer
+	if err := WritePairs(&buf, in, Options{Format: Pairs, System: "ignored"}); err != nil {
+		t.Fatal(err)
+	}
+	recs := lines(t, buf.String())
+	r := recs[0]
+	if r["id"] != "src-0000-q1" || r["chunk_id"] != "src-0000" || r["ref"] != "p-00412" || r["question"] != "Q?" || r["answer"] != "the passage" || r["reasoning"] != "why" {
+		t.Fatalf("%v", r)
+	}
+	if r["meta"].(map[string]any)["title"] != "Karma-Yoga" {
+		t.Fatalf("meta %v", r["meta"])
+	}
+	for _, k := range []string{"context", "system"} {
+		if _, ok := r[k]; ok {
+			t.Errorf("%s should be absent: %v", k, r)
+		}
+	}
+	for _, k := range []string{"ref", "meta", "reasoning"} {
+		if _, ok := recs[1][k]; ok {
+			t.Errorf("empty %s should be omitted: %v", k, recs[1])
+		}
+	}
+	buf.Reset()
+	WritePairs(&buf, in[:1], Options{Format: Pairs, IncludeContext: true})
+	if lines(t, buf.String())[0]["context"] != "the passage" {
+		t.Fatal("context missing")
+	}
+}
+
 func TestJSONArrayAndEmpty(t *testing.T) {
 	var buf bytes.Buffer
 	if err := WritePairs(&buf, sample, Options{Format: Alpaca, JSONArray: true}); err != nil {

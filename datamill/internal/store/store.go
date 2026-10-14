@@ -224,6 +224,23 @@ type Pair struct {
 // chunk file order then question number. Questions without answers are
 // omitted.
 func (p *Project) Pairs() ([]Pair, error) {
+	all, err := p.AllPairs()
+	if err != nil {
+		return nil, err
+	}
+	pairs := all[:0]
+	for _, pr := range all {
+		if pr.Answer.QuestionID != "" {
+			pairs = append(pairs, pr)
+		}
+	}
+	return pairs, nil
+}
+
+// AllPairs is Pairs for every question, answered or not: a question
+// without an answer has a zero Answer (empty QuestionID). It serves
+// exports that use the chunk itself as the answer.
+func (p *Project) AllPairs() ([]Pair, error) {
 	chunks, err := p.Chunks()
 	if err != nil {
 		return nil, err
@@ -248,11 +265,7 @@ func (p *Project) Pairs() ([]Pair, error) {
 	}
 	var pairs []Pair
 	for _, q := range qs {
-		a, ok := ansByQ[q.ID]
-		if !ok {
-			continue
-		}
-		pairs = append(pairs, Pair{Question: q, Answer: a, Chunk: chunkByID[q.ChunkID]})
+		pairs = append(pairs, Pair{Question: q, Answer: ansByQ[q.ID], Chunk: chunkByID[q.ChunkID]})
 	}
 	sort.SliceStable(pairs, func(i, j int) bool {
 		return chunkOrder[pairs[i].Chunk.ID] < chunkOrder[pairs[j].Chunk.ID]

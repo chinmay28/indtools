@@ -48,6 +48,13 @@ func TestRoundTripAndStatus(t *testing.T) {
 	if len(pairs) != 1 || pairs[0].Question.Text != "q2" || pairs[0].Answer.Text != "a2" || pairs[0].Chunk.Text != "A" {
 		t.Fatalf("pairs %+v", pairs)
 	}
+	all, err := p.AllPairs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || all[0].Question.Text != "q1" || all[0].Answer.QuestionID != "" || all[0].Chunk.Text != "A" || all[1].Answer.Text != "a2" {
+		t.Fatalf("all pairs %+v", all)
+	}
 
 	// Reopen and verify persistence; appending again accumulates.
 	p2, _ := Open(p.Dir)
