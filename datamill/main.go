@@ -136,6 +136,7 @@ type llmFlags struct {
 	questions, workers, maxTokens    int
 	temperature                      float64
 	cot                              bool
+	reasoningEffort                  string
 	lang, stage                      string
 	timeout                          time.Duration
 	retries                          int
@@ -151,6 +152,7 @@ func (l *llmFlags) bind(fs *flag.FlagSet) {
 	fs.IntVar(&l.maxTokens, "max-tokens", 4096, "max completion tokens per request")
 	fs.Float64Var(&l.temperature, "temperature", -1, "sampling temperature; negative leaves the provider default")
 	fs.BoolVar(&l.cot, "cot", false, "ask for chain-of-thought reasoning with each answer")
+	fs.StringVar(&l.reasoningEffort, "reasoning-effort", "", "cap the model's built-in thinking: none, low, medium or high (OpenAI-compatible servers only; \"none\" disables Qwen3 thinking on Ollama)")
 	fs.StringVar(&l.lang, "lang", "en", "language for questions and answers")
 	fs.StringVar(&l.stage, "stage", "all", "which stage to run: questions, answers or all")
 	fs.DurationVar(&l.timeout, "timeout", 5*time.Minute, "per-request timeout")
@@ -182,7 +184,7 @@ func (l *llmFlags) client() (llm.Client, error) {
 }
 
 func (l *llmFlags) generator(c llm.Client) *gen.Generator {
-	g := &gen.Generator{Client: c, Language: l.lang, MaxTokens: l.maxTokens}
+	g := &gen.Generator{Client: c, Language: l.lang, MaxTokens: l.maxTokens, ReasoningEffort: l.reasoningEffort}
 	if l.temperature >= 0 {
 		t := l.temperature
 		g.Temperature = &t

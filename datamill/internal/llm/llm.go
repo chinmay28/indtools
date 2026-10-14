@@ -26,6 +26,12 @@ type Request struct {
 	MaxTokens int
 	// Temperature is sent only when non-nil (some models reject it).
 	Temperature *float64
+	// ReasoningEffort, when set, asks the backend to limit or disable its
+	// built-in "thinking" ("none", "low", "medium" or "high"). The
+	// OpenAI-compatible backend sends it as reasoning_effort, which Ollama
+	// honours for thinking models such as Qwen3; the Anthropic backend
+	// ignores it.
+	ReasoningEffort string
 }
 
 // Client completes chat requests.
