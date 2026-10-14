@@ -46,12 +46,24 @@ type Stats struct {
 // complete. It is resumable: interrupting and re-running continues where
 // it left off. Run returns an error only for setup failures or context
 // cancellation; per-item failures are counted in Stats.Failed.
+//
+// For a Task without an answer stage (TaskPrompt, TaskReply) StageAll runs
+// the question stage only, and StageAnswers is an error.
 func Run(ctx context.Context, p *store.Project, g *Generator, o RunOptions) (Stats, error) {
 	if o.Workers <= 0 {
 		o.Workers = 4
 	}
 	if o.Stage == "" {
 		o.Stage = StageAll
+	}
+	if !ValidTask(g.Task) {
+		return Stats{}, fmt.Errorf("gen: unknown task %q", g.Task)
+	}
+	if !g.Task.HasAnswerStage() {
+		if o.Stage == StageAnswers {
+			return Stats{}, fmt.Errorf("gen: task %q has no answer stage (the chunk is the answer); run the questions stage and export with the chunk as answer", g.Task)
+		}
+		o.Stage = StageQuestions
 	}
 	var st Stats
 	if o.Stage == StageQuestions || o.Stage == StageAll {
@@ -91,7 +103,7 @@ func runQuestions(ctx context.Context, p *store.Project, g *Generator, o RunOpti
 	var mu sync.Mutex
 	return forEach(ctx, o.Workers, len(pending), func(i int) {
 		c := pending[i]
-		qs, err := g.Questions(ctx, c.Text, o.QuestionsPerChunk)
+		qs, err := g.Questions(ctx, c.Text, c.Meta, o.QuestionsPerChunk)
 		mu.Lock()
 		defer mu.Unlock()
 		if err != nil {

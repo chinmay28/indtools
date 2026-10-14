@@ -154,7 +154,7 @@ type llmFlags struct {
 	temperature                      float64
 	cot                              bool
 	reasoningEffort                  string
-	lang, stage                      string
+	task, lang, stage                string
 	timeout                          time.Duration
 	retries                          int
 }
@@ -164,7 +164,8 @@ func (l *llmFlags) bind(fs *flag.FlagSet) {
 	fs.StringVar(&l.model, "model", "", "model name (required for openai; defaults to "+llm.DefaultAnthropicModel+" for anthropic)")
 	fs.StringVar(&l.baseURL, "base-url", "", "API base URL (e.g. http://localhost:11434/v1 for Ollama)")
 	fs.StringVar(&l.apiKey, "api-key", "", "API key (default: DATAMILL_API_KEY, then the provider's usual env var)")
-	fs.IntVar(&l.questions, "questions", 0, "questions per chunk (0 = automatic, about one per 300 characters)")
+	fs.StringVar(&l.task, "task", string(gen.TaskQuestion), "what to write for each chunk: question (the chunk answers it), prompt (the chunk is a story or piece; write the request that produces it) or reply (the chunk is a reply; write the message it answers)")
+	fs.IntVar(&l.questions, "questions", 0, "questions per chunk (0 = automatic: about one per 300 characters for -task question, one otherwise)")
 	fs.IntVar(&l.workers, "workers", 4, "concurrent LLM requests")
 	fs.IntVar(&l.maxTokens, "max-tokens", 4096, "max completion tokens per request")
 	fs.Float64Var(&l.temperature, "temperature", -1, "sampling temperature; negative leaves the provider default")
@@ -201,7 +202,7 @@ func (l *llmFlags) client() (llm.Client, error) {
 }
 
 func (l *llmFlags) generator(c llm.Client) *gen.Generator {
-	g := &gen.Generator{Client: c, Language: l.lang, MaxTokens: l.maxTokens, ReasoningEffort: l.reasoningEffort}
+	g := &gen.Generator{Client: c, Task: gen.Task(l.task), Language: l.lang, MaxTokens: l.maxTokens, ReasoningEffort: l.reasoningEffort}
 	if l.temperature >= 0 {
 		t := l.temperature
 		g.Temperature = &t
@@ -210,6 +211,9 @@ func (l *llmFlags) generator(c llm.Client) *gen.Generator {
 }
 
 func (l *llmFlags) runOptions() (gen.RunOptions, error) {
+	if !gen.ValidTask(gen.Task(l.task)) {
+		return gen.RunOptions{}, fmt.Errorf("-task must be question, prompt or reply, got %q", l.task)
+	}
 	stage := gen.Stage(l.stage)
 	switch stage {
 	case gen.StageQuestions, gen.StageAnswers, gen.StageAll:

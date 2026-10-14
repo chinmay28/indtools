@@ -1,5 +1,14 @@
 // Package gen produces question/answer pairs from text chunks with an LLM.
 //
+// The first stage writes the user turn for a chunk. Which kind of user turn
+// is the Generator's Task: a question the chunk answers (TaskQuestion, the
+// default), a request the chunk fulfils (TaskPrompt: the chunk is a story,
+// essay or poem and the model writes the instruction that would produce
+// it), or a message the chunk replies to (TaskReply: the chunk is a letter
+// or answer and the model writes what the correspondent sent). For the two
+// reverse tasks the chunk itself is the assistant turn, so there is no
+// answer stage.
+//
 // Contract: Generator methods are pure functions of (chunk, options) apart
 // from the LLM call, and they parse model output defensively: code fences,
 // leading prose and trailing commentary around the JSON array are
@@ -19,9 +28,44 @@ import (
 	"github.com/chinmay28/indtools/datamill/internal/llm"
 )
 
+// Task selects what the question stage writes for each chunk.
+type Task string
+
+// Tasks.
+const (
+	// TaskQuestion writes questions the chunk answers.
+	TaskQuestion Task = "question"
+	// TaskPrompt writes requests for which the chunk is the response.
+	TaskPrompt Task = "prompt"
+	// TaskReply writes messages to which the chunk is the reply.
+	TaskReply Task = "reply"
+)
+
+// Tasks lists the valid Task values.
+var Tasks = []Task{TaskQuestion, TaskPrompt, TaskReply}
+
+// ValidTask reports whether t is one of Tasks or empty.
+func ValidTask(t Task) bool {
+	if t == "" {
+		return true
+	}
+	for _, k := range Tasks {
+		if k == t {
+			return true
+		}
+	}
+	return false
+}
+
+// HasAnswerStage reports whether t pairs with a model-written answer.
+// Only TaskQuestion does; for the reverse tasks the chunk is the answer.
+func (t Task) HasAnswerStage() bool { return t == "" || t == TaskQuestion }
+
 // Generator wraps an llm.Client with prompt settings.
 type Generator struct {
 	Client llm.Client
+	// Task selects the user-turn prompt; "" means TaskQuestion.
+	Task Task
 	// Language is the language questions and answers are written in
 	// ("en" by default).
 	Language string
@@ -40,10 +84,14 @@ type Answer struct {
 	Reasoning string
 }
 
-// QuestionsPerChunk picks how many questions to ask for a chunk of the
-// given rune length when the caller does not fix a number: one per ~300
-// runes, between 1 and 10.
-func QuestionsPerChunk(runes int) int {
+// QuestionsPerChunk picks how many user turns to ask for a chunk of the
+// given rune length when the caller does not fix a number. For
+// TaskQuestion it is one per ~300 runes, between 1 and 10; a story or a
+// letter gets one request or one incoming message however long it is.
+func QuestionsPerChunk(task Task, runes int) int {
+	if !task.HasAnswerStage() {
+		return 1
+	}
 	n := runes / 300
 	if n < 1 {
 		return 1
@@ -54,14 +102,27 @@ func QuestionsPerChunk(runes int) int {
 	return n
 }
 
-// Questions asks the model for n questions about chunk.
-func (g *Generator) Questions(ctx context.Context, chunk string, n int) ([]string, error) {
+// Questions asks the model for n user turns about chunk, according to
+// g.Task. meta (may be nil) is shown to the model as context about the
+// chunk, for example a letter's recipient and date.
+func (g *Generator) Questions(ctx context.Context, chunk string, meta map[string]string, n int) ([]string, error) {
 	if n <= 0 {
-		n = QuestionsPerChunk(len([]rune(chunk)))
+		n = QuestionsPerChunk(g.Task, len([]rune(chunk)))
+	}
+	var system, user string
+	switch g.Task {
+	case TaskPrompt:
+		system, user = promptSystem, promptPrompt(chunk, meta, n, g.Language)
+	case TaskReply:
+		system, user = replySystem, replyPrompt(chunk, meta, n, g.Language)
+	case TaskQuestion, "":
+		system, user = questionSystem, questionPrompt(chunk, meta, n, g.Language)
+	default:
+		return nil, fmt.Errorf("gen: unknown task %q", g.Task)
 	}
 	out, err := g.Client.Complete(ctx, llm.Request{
-		System:          questionSystem,
-		User:            questionPrompt(chunk, n, g.Language),
+		System:          system,
+		User:            user,
 		MaxTokens:       g.MaxTokens,
 		Temperature:     g.Temperature,
 		ReasoningEffort: g.ReasoningEffort,

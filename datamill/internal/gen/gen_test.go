@@ -79,8 +79,13 @@ func TestParseAnswer(t *testing.T) {
 
 func TestQuestionsPerChunk(t *testing.T) {
 	for in, want := range map[int]int{0: 1, 100: 1, 1500: 5, 9000: 10} {
-		if got := QuestionsPerChunk(in); got != want {
+		if got := QuestionsPerChunk(TaskQuestion, in); got != want {
 			t.Errorf("QuestionsPerChunk(%d) = %d, want %d", in, got, want)
+		}
+	}
+	for _, task := range []Task{TaskPrompt, TaskReply} {
+		if got := QuestionsPerChunk(task, 9000); got != 1 {
+			t.Errorf("QuestionsPerChunk(%s, 9000) = %d, want 1", task, got)
 		}
 	}
 }
@@ -99,12 +104,15 @@ func TestGeneratorQuestionsAndAnswer(t *testing.T) {
 		return "", errors.New("unexpected prompt: " + req.User)
 	}}
 	g := &Generator{Client: f, Language: "fr", ReasoningEffort: "none"}
-	qs, err := g.Questions(context.Background(), "chunk text", 2)
+	qs, err := g.Questions(context.Background(), "chunk text", nil, 2)
 	if err != nil || len(qs) != 2 { // truncated to n
 		t.Fatalf("%v %v", qs, err)
 	}
 	if !strings.Contains(f.seen[0].User, "French") || !strings.Contains(f.seen[0].User, "chunk text") || f.seen[0].ReasoningEffort != "none" {
 		t.Fatalf("prompt: %+v", f.seen[0])
+	}
+	if strings.Contains(f.seen[0].User, "About this text") {
+		t.Fatalf("no meta block expected: %s", f.seen[0].User)
 	}
 	a, err := g.Answer(context.Background(), "chunk text", "Q1?", true)
 	if err != nil || a.Text != "A1" || a.Reasoning != "step" {
@@ -113,6 +121,65 @@ func TestGeneratorQuestionsAndAnswer(t *testing.T) {
 	a, err = g.Answer(context.Background(), "chunk text", "Q1?", false)
 	if err != nil || a.Text != "A1 plain" || a.Reasoning != "" {
 		t.Fatalf("%+v %v", a, err)
+	}
+}
+
+func TestGeneratorTasks(t *testing.T) {
+	f := &fake{fn: func(req llm.Request) (string, error) { return `["turn one", "turn two"]`, nil }}
+	meta := map[string]string{"recipient": "Alasinga", "date": "1894-05-28"}
+	cases := []struct {
+		task       Task
+		wantSystem string
+		wantUser   []string
+	}{
+		{TaskQuestion, "write questions", []string{"write exactly 1 distinct questions", "About this text:\ndate: 1894-05-28\nrecipient: Alasinga", "Text:"}},
+		{TaskPrompt, "reconstruct the request", []string{"Write exactly 1 distinct requests", "About this text:", "Text:"}},
+		{TaskReply, "reconstruct the message", []string{"Write exactly 1 distinct messages", "About this reply:", "Reply:"}},
+	}
+	for _, c := range cases {
+		f.seen = nil
+		g := &Generator{Client: f, Task: c.task}
+		qs, err := g.Questions(context.Background(), "the chunk", meta, 1)
+		if err != nil || len(qs) != 1 || qs[0] != "turn one" {
+			t.Fatalf("%s: %v %v", c.task, qs, err)
+		}
+		req := f.seen[0]
+		if !strings.Contains(req.System, c.wantSystem) {
+			t.Errorf("%s: system prompt %q", c.task, req.System)
+		}
+		for _, w := range c.wantUser {
+			if !strings.Contains(req.User, w) {
+				t.Errorf("%s: user prompt lacks %q:\n%s", c.task, w, req.User)
+			}
+		}
+		if !strings.Contains(req.User, "English") || !strings.HasSuffix(strings.TrimSpace(req.User), "the chunk\n\"\"\"") {
+			t.Errorf("%s: user prompt tail: %q", c.task, req.User)
+		}
+	}
+	if _, err := (&Generator{Client: f, Task: "bogus"}).Questions(context.Background(), "x", nil, 1); err == nil {
+		t.Fatal("unknown task accepted")
+	}
+	if !ValidTask("") || !ValidTask(TaskReply) || ValidTask("bogus") {
+		t.Fatal("ValidTask")
+	}
+	if !Task("").HasAnswerStage() || !TaskQuestion.HasAnswerStage() || TaskPrompt.HasAnswerStage() || TaskReply.HasAnswerStage() {
+		t.Fatal("HasAnswerStage")
+	}
+}
+
+func TestRunReverseTaskSkipsAnswers(t *testing.T) {
+	p := seedProject(t, 2)
+	f := &fake{fn: func(req llm.Request) (string, error) { return `["Write me a story."]`, nil }}
+	g := &Generator{Client: f, Task: TaskPrompt}
+	st, err := Run(context.Background(), p, g, RunOptions{Stage: StageAll})
+	if err != nil || st.QuestionsGenerated != 2 || st.AnswersGenerated != 0 || atomic.LoadInt32(&f.calls) != 2 {
+		t.Fatalf("%+v %v calls=%d", st, err, f.calls)
+	}
+	if _, err := Run(context.Background(), p, g, RunOptions{Stage: StageAnswers}); err == nil {
+		t.Fatal("answers stage should be refused for a reverse task")
+	}
+	if _, err := Run(context.Background(), p, &Generator{Client: f, Task: "bogus"}, RunOptions{}); err == nil {
+		t.Fatal("unknown task should be refused")
 	}
 }
 
