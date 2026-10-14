@@ -107,6 +107,7 @@ OPENAI_API_KEY / ANTHROPIC_API_KEY depending on the provider.
 
 type chunkFlags struct {
 	size, min, max, overlap int
+	unit                    string
 	headings                bool
 	noReflow                bool
 	pdftotext, ebookConvert string
@@ -117,6 +118,7 @@ func (c *chunkFlags) bind(fs *flag.FlagSet) {
 	fs.IntVar(&c.min, "chunk-min", chunk.DefaultMin, "minimum chunk size; smaller trailing pieces are merged")
 	fs.IntVar(&c.max, "chunk-max", chunk.DefaultMax, "hard maximum chunk size")
 	fs.IntVar(&c.overlap, "chunk-overlap", 0, "characters of the previous chunk to repeat at the start of each chunk")
+	fs.StringVar(&c.unit, "unit", string(chunk.UnitChunk), "what one chunk is: chunk (paragraphs packed to -chunk-size), paragraph (one per paragraph) or document (the whole file)")
 	fs.BoolVar(&c.headings, "headings", true, "treat Markdown headings and 'Chapter N' lines as chunk boundaries")
 	fs.BoolVar(&c.noReflow, "no-reflow", false, "never join hard-wrapped lines (default: reflow PDFs and fixed-width text)")
 	fs.StringVar(&c.pdftotext, "pdftotext", "", "path to the pdftotext binary (default: look up on PATH)")
@@ -124,7 +126,14 @@ func (c *chunkFlags) bind(fs *flag.FlagSet) {
 }
 
 func (c *chunkFlags) options() chunk.Options {
-	return chunk.Options{Target: c.size, Min: c.min, Max: c.max, Overlap: c.overlap, Headings: c.headings}
+	return chunk.Options{Target: c.size, Min: c.min, Max: c.max, Overlap: c.overlap, Headings: c.headings, Unit: chunk.Unit(c.unit)}
+}
+
+func (c *chunkFlags) validate() error {
+	if !chunk.ValidUnit(chunk.Unit(c.unit)) {
+		return fmt.Errorf("-unit must be chunk, paragraph or document, got %q", c.unit)
+	}
+	return nil
 }
 
 func (c *chunkFlags) extractOptions() extract.Options {
@@ -236,6 +245,9 @@ func runIngest(ctx context.Context, args []string) error {
 // ingest extracts, cleans and chunks each file into the project. Files
 // whose content is already in the project are skipped.
 func ingest(ctx context.Context, p *store.Project, files []string, cf chunkFlags, log io.Writer) error {
+	if err := cf.validate(); err != nil {
+		return err
+	}
 	existing, err := p.Sources()
 	if err != nil {
 		return err

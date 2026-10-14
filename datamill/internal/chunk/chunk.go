@@ -7,11 +7,18 @@
 // Output contract:
 //   - no chunk is empty or whitespace-only;
 //   - every chunk is at most Max runes long, plus at most Overlap runes of
-//     prefix carried over from the previous chunk;
+//     prefix carried over from the previous chunk (UnitDocument excepted:
+//     it is the whole text, whatever its size);
 //   - paragraph boundaries are preferred, then sentence boundaries, then
 //     word boundaries; a single word longer than Max is cut at Max;
 //   - the concatenation of all chunks (ignoring overlap) contains every
 //     non-whitespace character of the input, in order.
+//
+// Three units are supported (Options.Unit): UnitChunk packs paragraphs up
+// to a target size (the default, for Q&A generation); UnitParagraph keeps
+// one paragraph per chunk, so each chunk is a citable passage; and
+// UnitDocument keeps the whole text as one chunk, for inputs that are
+// complete works on their own, such as a short story.
 package chunk
 
 import (
@@ -38,6 +45,42 @@ type Options struct {
 	// "Chapter N" / "Part N" lines as hard section boundaries that chunks
 	// do not straddle, except when merging a runt.
 	Headings bool
+	// Unit selects the chunking unit; "" means UnitChunk.
+	Unit Unit
+}
+
+// Unit names what one chunk corresponds to.
+type Unit string
+
+// Units.
+const (
+	// UnitChunk packs consecutive paragraphs up to Target runes.
+	UnitChunk Unit = "chunk"
+	// UnitParagraph emits one chunk per paragraph. A paragraph longer than
+	// Max is split at sentence boundaries; a paragraph shorter than Min
+	// (a heading, a one-line reply) is attached to the paragraph that
+	// follows it, or to the previous one when it is the last. Overlap is
+	// ignored.
+	UnitParagraph Unit = "paragraph"
+	// UnitDocument emits the whole text as a single chunk, ignoring every
+	// size option.
+	UnitDocument Unit = "document"
+)
+
+// Units lists the valid Unit values.
+var Units = []Unit{UnitChunk, UnitParagraph, UnitDocument}
+
+// ValidUnit reports whether u is one of Units or empty.
+func ValidUnit(u Unit) bool {
+	if u == "" {
+		return true
+	}
+	for _, k := range Units {
+		if k == u {
+			return true
+		}
+	}
+	return false
 }
 
 // Default sizes, chosen to be comfortably inside a single LLM prompt while
@@ -81,6 +124,12 @@ func Split(text string, o Options) []string {
 	paras := paragraphs(text)
 	if len(paras) == 0 {
 		return nil
+	}
+	switch o.Unit {
+	case UnitDocument:
+		return []string{strings.Join(paras, "\n\n")}
+	case UnitParagraph:
+		return splitParagraphs(paras, o)
 	}
 
 	var chunks []string
@@ -131,6 +180,51 @@ func Split(text string, o Options) []string {
 		chunks = applyOverlap(chunks, o.Overlap)
 	}
 	return chunks
+}
+
+// splitParagraphs implements UnitParagraph: one chunk per paragraph,
+// over-long paragraphs split, runts glued to the following paragraph.
+func splitParagraphs(paras []string, o Options) []string {
+	var pieces []string
+	for _, p := range paras {
+		if runeLen(p) <= o.Max {
+			pieces = append(pieces, p)
+			continue
+		}
+		pieces = append(pieces, splitLong(p, o)...)
+	}
+	var out []string
+	var runt string // pending short pieces, joined, waiting for a host
+	for _, p := range pieces {
+		if runeLen(p) < o.Min {
+			runt = joinPara(runt, p)
+			continue
+		}
+		if runt != "" {
+			if runeLen(runt)+2+runeLen(p) <= o.Max {
+				p = joinPara(runt, p)
+			} else {
+				out = append(out, runt)
+			}
+			runt = ""
+		}
+		out = append(out, p)
+	}
+	if runt != "" {
+		if n := len(out); n > 0 && runeLen(out[n-1])+2+runeLen(runt) <= o.Max {
+			out[n-1] = joinPara(out[n-1], runt)
+		} else {
+			out = append(out, runt)
+		}
+	}
+	return out
+}
+
+func joinPara(a, b string) string {
+	if a == "" {
+		return b
+	}
+	return a + "\n\n" + b
 }
 
 // paragraphs splits on blank lines and drops empties.

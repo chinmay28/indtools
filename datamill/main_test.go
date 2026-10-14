@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +86,34 @@ func TestIngestAndExportText(t *testing.T) {
 	}
 	if err := doExport(p, exportFlags{format: "nope", out: out}); err == nil {
 		t.Fatal("expected error for unknown format")
+	}
+}
+
+func TestIngestUnits(t *testing.T) {
+	dir := t.TempDir()
+	story := filepath.Join(dir, "story.txt")
+	body := "Once upon a time.\n\n" + strings.Repeat("The dragon flew over the hills. ", 20) + "\n\n" + strings.Repeat("Then it slept. ", 20) + "\n"
+	if err := os.WriteFile(story, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := store.Open(filepath.Join(dir, "doc"))
+	if err := ingest(context.Background(), p, []string{story}, chunkFlags{unit: "document"}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	chunks, _ := p.Chunks()
+	if len(chunks) != 1 || !strings.HasPrefix(chunks[0].Text, "Once upon a time.\n\nThe dragon") {
+		t.Fatalf("document unit: %d chunks %q", len(chunks), chunks[0].Text)
+	}
+	p, _ = store.Open(filepath.Join(dir, "para"))
+	if err := ingest(context.Background(), p, []string{story}, chunkFlags{unit: "paragraph", min: 10, max: 2000}, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	chunks, _ = p.Chunks()
+	if len(chunks) != 3 || chunks[0].Text != "Once upon a time." {
+		t.Fatalf("paragraph unit: %d chunks %q", len(chunks), chunks[0].Text)
+	}
+	if err := ingest(context.Background(), p, []string{story}, chunkFlags{unit: "sentence"}, io.Discard); err == nil {
+		t.Fatal("bad unit accepted")
 	}
 }
 
