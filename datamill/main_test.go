@@ -140,3 +140,45 @@ func TestLLMFlagsClient(t *testing.T) {
 		t.Fatal("negative temperature should be omitted")
 	}
 }
+
+func TestIngestRecords(t *testing.T) {
+	dir := t.TempDir()
+	jl := filepath.Join(dir, "sections.jsonl")
+	body := `{"id":"s-1","text":"Work   is worship.\n\n\nServe   all.","volume":1,"title":"Karma-Yoga"}
+{"id":"s-2","text":"   "}
+{"id":"s-3","text":"Second passage."}
+`
+	if err := os.WriteFile(jl, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := store.Open(filepath.Join(dir, "proj"))
+	var log bytes.Buffer
+	if err := ingest(context.Background(), p, []string{jl}, chunkFlags{}, &log); err == nil {
+		t.Fatal("a blank text record should fail the file")
+	}
+	body = strings.ReplaceAll(body, `{"id":"s-2","text":"   "}`+"\n", "")
+	os.WriteFile(jl, []byte(body), 0o644)
+	if err := ingest(context.Background(), p, []string{jl}, chunkFlags{}, &log); err != nil {
+		t.Fatalf("%v\n%s", err, log.String())
+	}
+	srcs, _ := p.Sources()
+	if len(srcs) != 1 || srcs[0].Format != FormatRecords || srcs[0].Chunks != 2 {
+		t.Fatalf("sources %+v", srcs)
+	}
+	chunks, _ := p.Chunks()
+	if len(chunks) != 2 || chunks[0].ID != srcs[0].ID+"-0000" || chunks[0].Ref != "s-1" || chunks[1].Ref != "s-3" {
+		t.Fatalf("chunks %+v", chunks)
+	}
+	if chunks[0].Text != "Work is worship.\n\nServe all." {
+		t.Fatalf("text not normalised: %q", chunks[0].Text)
+	}
+	if chunks[0].Meta["volume"] != "1" || chunks[0].Meta["title"] != "Karma-Yoga" || chunks[1].Meta != nil {
+		t.Fatalf("meta %v %v", chunks[0].Meta, chunks[1].Meta)
+	}
+	// Meta and ref survive a round trip through the store.
+	p2, _ := store.Open(p.Dir)
+	again, _ := p2.Chunks()
+	if again[0].Ref != "s-1" || again[0].Meta["title"] != "Karma-Yoga" {
+		t.Fatalf("round trip %+v", again[0])
+	}
+}
