@@ -10,16 +10,20 @@ One Go module, one binary, internal packages with one job each:
 main.go            CLI: flag groups + subcommands; thin glue only
 internal/extract   file -> Document{Text, Title, Format, Wrapped}
 internal/clean     whitespace/reflow/page-number normalisation
-internal/chunk     paragraph -> sentence -> word splitter (rune sizes)
+internal/chunk     paragraph -> sentence -> word splitter (rune sizes);
+                   units: chunk (packed), paragraph, document
+internal/records   JSONL {"id","text",...} -> Record{Ref, Text, Meta}
 internal/store     project dir, append-only JSONL, deterministic IDs
 internal/llm       Client interface; openai + anthropic raw-HTTP backends; Retry
-internal/gen       prompts, output parsing, resumable worker pipeline
-internal/export    alpaca / sharegpt / messages / text writers
+internal/gen       prompts per task (question/prompt/reply), output
+                   parsing, resumable worker pipeline
+internal/export    alpaca / sharegpt / messages / pairs / text writers
 ```
 
-Dependency direction: `main -> gen -> {llm, store}`, `main -> {extract ->
-clean, chunk, export}`. Nothing imports `main`; `llm`, `store`, `chunk`,
-`clean`, `export` import nothing from this module. Keep it that way.
+Dependency direction: `main -> gen -> {llm, store, records}`, `main ->
+{extract -> clean, chunk, records, export}`. Nothing imports `main`;
+`llm`, `store`, `chunk`, `clean`, `records`, `export` import nothing from
+this module. Keep it that way.
 
 The only third-party dependency is `golang.org/x/net/html` (pinned to a
 version whose `go.mod` is <= 1.24). The Anthropic Go SDK was deliberately
@@ -35,7 +39,29 @@ Messages API call is forty lines. Do not add the OpenAI SDK either.
   existing projects.
 - **JSONL files are append-only.** `store` never rewrites a file.
   `Pairs()` resolves duplicates by "last answer wins", so a re-answer is
-  appended, never edited in place.
+  appended, never edited in place. `AllPairs()` is the same join without
+  dropping unanswered questions; `export -answer-source chunk` uses it.
+- **`Chunk.Ref` and `Chunk.Meta` come only from JSONL record ingest**
+  (`internal/records`). They are passthrough: Ref is the caller's own
+  passage id and is never used for resume or dedup (chunk IDs still are);
+  Meta is rendered into prompts (`records.FormatMeta`, keys sorted) and
+  copied into the `pairs` export. Chunks cut by datamill have neither.
+- **The question stage writes the user turn; `-task` decides what kind.**
+  `question` (default) pairs with a model-written answer. `prompt` and
+  `reply` are reverse tasks: the chunk itself is the assistant turn, so
+  `gen.Run` downgrades `-stage all` to the question stage and refuses
+  `-stage answers` (`Task.HasAnswerStage`). The records still live in
+  `questions.jsonl` whatever the task; do not add a parallel file.
+  `QuestionsPerChunk` is 1 for the reverse tasks regardless of length.
+- **`-unit paragraph` and `-unit document`** are `chunk.Options.Unit`.
+  Paragraph mode keeps the no-empty / `<= Max` / content-preserved
+  invariants and glues runts *forward* (a heading joins the paragraph
+  after it); overlap is ignored. Document mode is the whole text, any
+  size. The default unit's behaviour is untouched.
+- **`llm.Request.ReasoningEffort`** is sent as `reasoning_effort` by the
+  OpenAI backend only (Ollama maps it to its think option; `"none"`
+  turns Qwen3 thinking off). The Anthropic backend ignores it on purpose;
+  do not translate it into `thinking` budgets without a test.
 - **`clean.Text` output** has exactly one blank line between paragraphs
   and no leading/trailing whitespace. `chunk.Split` relies on
   `\n\n` as the paragraph separator.
@@ -55,9 +81,10 @@ Messages API call is forty lines. Do not add the OpenAI SDK either.
   `-temperature -1` (default) to nil.
 - **Prompt parsing is defensive on purpose** (`gen.ParseQuestions`,
   `gen.ParseAnswer`): code fences, prose around the JSON, numbered lists,
-  `{"question": ...}` objects, `<think>`/`<reasoning>` variants and an
-  unterminated `<answer>` are all accepted. Add new tolerated shapes with
-  a test case rather than tightening the parser.
+  `{"question": ...}` objects, a leading `<think>` block before the
+  array, `<think>`/`<reasoning>` variants and an unterminated `<answer>`
+  are all accepted. Add new tolerated shapes with a test case rather than
+  tightening the parser.
 
 ## MOBI reader
 
